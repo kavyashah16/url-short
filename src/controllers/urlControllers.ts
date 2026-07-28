@@ -1,10 +1,11 @@
 import type { Request, Response } from "express";
 import { db } from "../db/index.js";
 import { analytics, urls } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { encodeBase62 } from "../utils/base62.js";
 import { analyticsHelper } from "../utils/analyticsHelper.js";
 import { error } from "node:console";
+import bcrypt from "bcrypt";
 
 type RedirectParams = {
   shortCode: string;
@@ -12,12 +13,30 @@ type RedirectParams = {
 
 export async function short(req: Request, res: Response) {
   try {
-    const { url, customAlias, expiresAt } = req.body;
-
-    const age = new Date(expiresAt);
+    const { url, customAlias, expiresAt, password, clickLimit } = req.body;
 
     if (!url) {
       return res.status(400).json({ message: "URL is required!" });
+    }
+
+    const age = expiresAt ? new Date(expiresAt) : null;
+
+    let hashPass = null;
+    let isPass = 0;
+
+    if (password && password.trim() != "") {
+      hashPass = await bcrypt.hash(password, 10);
+      isPass = 1;
+    }
+
+    let parseLimit = null;
+    let isLimit = 0;
+    if (clickLimit !== undefined && clickLimit !== null) {
+      const val = parseInt(clickLimit, 10);
+      if (!isNaN(val) && val > 0) {
+        parseLimit = val;
+        isLimit = 1;
+      }
     }
 
     let shortCode = "";
@@ -38,9 +57,14 @@ export async function short(req: Request, res: Response) {
           customAlias: 1,
           age,
           status: 1,
+          password: hashPass,
+          isPass,
+          clickLimit: parseLimit,
+          isLimit,
+          clickCount: 0,
         });
 
-        shortCode += customAlias;
+        shortCode = customAlias;
       }
     } else {
       const result = await db.insert(urls).values({
@@ -48,11 +72,16 @@ export async function short(req: Request, res: Response) {
         customAlias: 0,
         age,
         status: 1,
+        password: hashPass,
+        isPass,
+        clickLimit: parseLimit,
+        isLimit,
+        clickCount: 0,
       });
 
       const id = result[0].insertId;
-
       shortCode = encodeBase62(id);
+
       await db
         .update(urls)
         .set({
@@ -77,6 +106,8 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
   try {
     const { shortCode } = req.params;
 
+    const clientPass = req.headers["x-link-password"];
+
     if (!shortCode) {
       return res.status(400).json({ message: "Bad Request!" });
     }
@@ -98,6 +129,35 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
     if (url.age && new Date(url.age) < new Date()) {
       return res.status(410).json({ message: "Expired!" });
     }
+
+    if (url.isLimit === 1) {
+      if (
+        url.clickCount != null &&
+        url.clickLimit != null &&
+        url.clickCount >= url.clickLimit
+      ) {
+        await db.update(urls).set({ status: 0 }).where(eq(urls.id, url.id));
+        return res.status(410).json({ message: "Limited reached!" });
+      }
+    }
+
+    if (url.isPass === 1) {
+      if (!clientPass || typeof clientPass != "string") {
+        return res
+          .status(403)
+          .json({ message: "Password requiresd!", requiresPassword: true });
+      }
+      const match = await bcrypt.compare(clientPass, url.password || "");
+
+      if (!match) {
+        return res.status(401).json({ message: "Password Invalid!" });
+      }
+    }
+
+    await db
+      .update(urls)
+      .set({ clickCount: sql`${urls.clickCount} + 1` })
+      .where(eq(urls.id, url.id));
 
     res.redirect(302, url.url);
 
