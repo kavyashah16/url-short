@@ -1,8 +1,10 @@
 import type { Request, Response } from "express";
 import { db } from "../db/index.js";
-import { urls } from "../db/schema.js";
+import { analytics, urls } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { encodeBase62 } from "../utils/base62.js";
+import { analyticsHelper } from "../utils/analyticsHelper.js";
+import { error } from "node:console";
 
 type RedirectParams = {
   shortCode: string;
@@ -96,6 +98,23 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
     if (url.age && new Date(url.age) < new Date()) {
       return res.status(410).json({ message: "Expired!" });
     }
+
+    res.redirect(302, url.url);
+
+    const metaData = analyticsHelper(req);
+
+    db.insert(analytics)
+      .values({
+        urlId: url.id,
+        ipAddress: metaData.ipAddress,
+        country: metaData.country,
+        browser: metaData.browser,
+        device: metaData.device,
+        referrer: metaData.referrer,
+      })
+      .catch((err) => {
+        console.error("Async Analytics Logging Failure:", err);
+      });
   } catch (error) {
     console.error(error);
 
