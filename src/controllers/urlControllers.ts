@@ -145,7 +145,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       if (!clientPass || typeof clientPass != "string") {
         return res
           .status(403)
-          .json({ message: "Password requiresd!", requiresPassword: true });
+          .json({ message: "Password required!", requiresPassword: true });
       }
       const match = await bcrypt.compare(clientPass, url.password || "");
 
@@ -182,4 +182,72 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       message: "Internal Server Error",
     });
   }
+}
+
+export async function updateUrl(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { url, password, clickLimit, status } = req.body;
+
+    if (typeof id != "string") {
+      return res.status(400).json({ message: "Invalid!" });
+    }
+
+    const urlId = parseInt(id, 10);
+    if (isNaN(urlId)) {
+      return res.status(400).json({ message: "Invalid!" });
+    }
+
+    const [exists] = await db
+      .select()
+      .from(urls)
+      .where(eq(urls.id, urlId))
+      .limit(1);
+
+    if (!exists) {
+      return res.status(404).json({ message: "Link not found!" });
+    }
+
+    let updatedValues: Record<string, any> = {};
+
+    if (url) updatedValues.url = url;
+    if (status !== undefined) updatedValues.status = status;
+
+    if (password !== undefined) {
+      if (password.trim() === "") {
+        updatedValues.password = null;
+        updatedValues.isPass = 0;
+      } else {
+        updatedValues.password = await bcrypt.hash(password, 10);
+        updatedValues.isPass = 1;
+      }
+    }
+
+    if (clickLimit !== undefined) {
+      if (clickLimit === null || clickLimit === "") {
+        updatedValues.clickLimit = null;
+        updatedValues.isLimit = 0;
+      } else {
+        const val = parseInt(clickLimit, 10);
+        if (!isNaN(val) && val > 0) {
+          updatedValues.clickLimit = val;
+          updatedValues.isLimit = 1;
+        }
+      }
+    }
+
+    await db.update(urls).set(updatedValues).where(eq(urls.id, urlId));
+    return res.status(200).json({ message: "Short URL updated successfully!" });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+}
+
+export async function deleteUrl(req: Request, res: Response) {
+  try {
+  } catch (error) {}
 }
