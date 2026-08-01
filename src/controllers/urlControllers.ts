@@ -118,7 +118,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       .where(eq(urls.short, shortCode))
       .limit(1);
 
-    if (!url) {
+    if (!url || url.status === -1) {
       return res.status(404).json({ message: "Not found!" });
     }
 
@@ -249,5 +249,32 @@ export async function updateUrl(req: Request, res: Response) {
 
 export async function deleteUrl(req: Request, res: Response) {
   try {
-  } catch (error) {}
+    const { id } = req.params;
+    if (typeof id !== "string") {
+      return res.status(400).json({ message: "Invalid!" });
+    }
+    const val = parseInt(id, 10);
+    if (isNaN(val)) {
+      return res.status(400).json({ message: "Invalid!" });
+    }
+
+    const [exist] = await db
+      .select()
+      .from(urls)
+      .where(eq(urls.id, val))
+      .limit(1);
+
+    if (!exist) {
+      return res.status(404).json({ message: "Doesn't Exist" });
+    }
+
+    await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
+    return res.status(200).json({ message: "Deleted!" });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
 }

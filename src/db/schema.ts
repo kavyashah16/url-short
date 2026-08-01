@@ -14,12 +14,12 @@ export const urls = mysqlTable("urls", {
   short: varchar({ length: 255 }).unique(),
   customAlias: tinyint().default(0),
   age: timestamp(),
-  status: tinyint().default(1),
   password: varchar({ length: 255 }),
   isPass: tinyint().default(0),
   clickLimit: int(),
   isLimit: tinyint().default(0),
   clickCount: int().default(0),
+  status: tinyint().default(1),
 });
 
 export const analytics = mysqlTable("analytics", {
