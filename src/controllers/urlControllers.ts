@@ -2,10 +2,22 @@ import type { Request, Response } from "express";
 import { db } from "../db/index.js";
 import { analytics, urls } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
-import { encodeBase62 } from "../utils/base62.js";
 import { analyticsHelper } from "../utils/analyticsHelper.js";
-import { error } from "node:console";
 import bcrypt from "bcrypt";
+import { customAlphabet } from "nanoid";
+import dotenv from "dotenv";
+dotenv.config();
+
+const CHARSET =
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+const LENGTH = Number(process.env.LENGTH);
+
+if (Number.isNaN(LENGTH)) {
+  throw new Error("LENGTH must be a valid number in the .env file");
+}
+
+const generateRandomCode = customAlphabet(CHARSET, LENGTH);
 
 type RedirectParams = {
   shortCode: string;
@@ -24,7 +36,7 @@ export async function short(req: Request, res: Response) {
     let hashPass = null;
     let isPass = 0;
 
-    if (password && password.trim() != "") {
+    if (password && password.trim() !== "") {
       hashPass = await bcrypt.hash(password, 10);
       isPass = 1;
     }
@@ -50,26 +62,12 @@ export async function short(req: Request, res: Response) {
 
       if (exist) {
         return res.status(409).json({ message: "Already exists!" });
-      } else {
-        await db.insert(urls).values({
-          url,
-          short: customAlias,
-          customAlias: 1,
-          age,
-          status: 1,
-          password: hashPass,
-          isPass,
-          clickLimit: parseLimit,
-          isLimit,
-          clickCount: 0,
-        });
-
-        shortCode = customAlias;
       }
-    } else {
-      const result = await db.insert(urls).values({
+
+      await db.insert(urls).values({
         url,
-        customAlias: 0,
+        short: customAlias,
+        customAlias: 1,
         age,
         status: 1,
         password: hashPass,
@@ -79,33 +77,56 @@ export async function short(req: Request, res: Response) {
         clickCount: 0,
       });
 
-      const id = result[0].insertId;
-      shortCode = encodeBase62(id);
+      shortCode = customAlias;
+    } else {
+      const MAX_RETRIES = 3;
+      let attempts = 0;
+      let inserted = false;
 
-      await db
-        .update(urls)
-        .set({
-          short: shortCode,
-        })
-        .where(eq(urls.id, id));
+      while (attempts < MAX_RETRIES && !inserted) {
+        shortCode = generateRandomCode();
+        try {
+          await db.insert(urls).values({
+            url,
+            short: shortCode,
+            customAlias: 0,
+            age,
+            status: 1,
+            password: hashPass,
+            isPass,
+            clickLimit: parseLimit,
+            isLimit,
+            clickCount: 0,
+          });
+          inserted = true;
+        } catch (dbError: any) {
+          const isCollision =
+            dbError.errno === 1062 || dbError.code === "23505";
+          if (isCollision) {
+            attempts++;
+            continue;
+          }
+          throw dbError;
+        }
+      }
+
+      if (!inserted) {
+        return res
+          .status(500)
+          .json({ message: "Failed to generate unique short link." });
+      }
     }
 
-    return res.status(201).json({
-      shortCode,
-    });
+    return res.status(201).json({ shortCode });
   } catch (error) {
     console.error(error);
-
-    return res.status(500).json({
-      message: "Internal Server Error",
-    });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 }
 
 export async function redirect(req: Request<RedirectParams>, res: Response) {
   try {
     const { shortCode } = req.params;
-
     const clientPass = req.headers["x-link-password"];
 
     if (!shortCode) {
@@ -177,10 +198,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       });
   } catch (error) {
     console.error(error);
-
-    return res.status(500).json({
-      message: "Internal Server Error",
-    });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 }
 
@@ -240,10 +258,7 @@ export async function updateUrl(req: Request, res: Response) {
     return res.status(200).json({ message: "Short URL updated successfully!" });
   } catch (error) {
     console.error(error);
-
-    return res.status(500).json({
-      message: "Internal Server Error",
-    });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 }
 
@@ -272,9 +287,6 @@ export async function deleteUrl(req: Request, res: Response) {
     return res.status(200).json({ message: "Deleted!" });
   } catch (error) {
     console.error(error);
-
-    return res.status(500).json({
-      message: "Internal Server Error",
-    });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 }
