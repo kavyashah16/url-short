@@ -20,6 +20,7 @@ export const urls = mysqlTable("urls", {
   isLimit: tinyint().default(0),
   clickCount: int().default(0),
   status: tinyint().default(1),
+  userId: int().references(() => users.id),
 });
 
 export const analytics = mysqlTable("analytics", {
@@ -31,4 +32,10 @@ export const analytics = mysqlTable("analytics", {
   browser: varchar({ length: 255 }).notNull(),
   device: varchar({ length: 255 }).notNull(),
   referrer: varchar({ length: 255 }).notNull(),
+});
+
+export const users = mysqlTable("users", {
+  id: int().primaryKey().autoincrement(),
+  userName: varchar({ length: 255 }).unique(),
+  password: varchar({ length: 255 }).notNull(),
 });
