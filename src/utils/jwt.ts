@@ -8,6 +8,10 @@ export interface Tokenpayload {
   userName: string;
 }
 
-export function generateToken(payload: Tokenpayload) {
+export function generateToken(payload: Tokenpayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn });
+}
+
+export function verifyToken(token: string): Tokenpayload {
+  return jwt.verify(token, JWT_SECRET) as Tokenpayload;
 }
