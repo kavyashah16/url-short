@@ -7,7 +7,8 @@ import bcrypt from "bcrypt";
 import { customAlphabet } from "nanoid";
 import dotenv from "dotenv";
 import { isValidAlias, isValidUrl, normalizeURL } from "../utils/urlUtils.js";
-import { getRedisClient } from "../db/redis.js";
+import { redisClient } from "../db/redis.js";
+import { analyticsQueue } from "../queues/analyticsQueue.js";
 dotenv.config();
 
 const CHARSET =
@@ -159,11 +160,10 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
     let url: typeof urls.$inferSelect | undefined;
 
     try {
-      const redis = await getRedisClient();
-      const cached = await redis.get(`url:${shortCode}`);
+      const cached = await redisClient.get(`url:${shortCode}`);
       if (cached) url = JSON.parse(cached);
     } catch (error) {
-      console.error("Redis unavailable, failing to connect to DB: ", error);
+      console.error("Redis unavailable, falling back to DB:", error);
     }
 
     if (!url) {
@@ -175,8 +175,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
 
       if (url && url.status !== -1 && url.isLimit !== 1) {
         try {
-          const redis = await getRedisClient();
-          await redis.set(`url:${shortCode}`, JSON.stringify(url), {
+          await redisClient.set(`url:${shortCode}`, JSON.stringify(url), {
             EX: CACHE_TTL_SECONDS,
           });
         } catch (cacheErr) {
@@ -230,8 +229,8 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
 
     const metaData = analyticsHelper(req);
 
-    db.insert(analytics)
-      .values({
+    analyticsQueue
+      .add("log-click", {
         urlId: url.id,
         ipAddress: metaData.ipAddress,
         country: metaData.country,
@@ -240,7 +239,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
         referrer: metaData.referrer,
       })
       .catch((err) => {
-        console.error("Async Analytics Logging Failure:", err);
+        console.error("Failed to enqueue analytics job:", err);
       });
   } catch (error) {
     console.error(error);
@@ -304,8 +303,7 @@ export async function updateUrl(req: Request, res: Response) {
     await db.update(urls).set(updatedValues).where(eq(urls.id, exists.id));
 
     try {
-      const redis = await getRedisClient();
-      await redis.del(`url:${shortCode}`);
+      await redisClient.del(`url:${shortCode}`);
     } catch (cacheErr) {
       console.error("Failed to invalidate cache:", cacheErr);
     }
@@ -347,8 +345,7 @@ export async function deleteUrl(req: Request, res: Response) {
     await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
 
     try {
-      const redis = await getRedisClient();
-      await redis.del(`url:${exist.short}`);
+      await redisClient.del(`url:${exist.short}`);
     } catch (cacheErr) {
       console.error("Failed to invalidate cache:", cacheErr);
     }
