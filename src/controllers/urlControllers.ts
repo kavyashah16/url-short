@@ -7,6 +7,7 @@ import bcrypt from "bcrypt";
 import { customAlphabet } from "nanoid";
 import dotenv from "dotenv";
 import { isValidAlias, isValidUrl, normalizeURL } from "../utils/urlUtils.js";
+import { getRedisClient } from "../db/redis.js";
 dotenv.config();
 
 const CHARSET =
@@ -21,6 +22,8 @@ if (Number.isNaN(LENGTH) || LENGTH < 6) {
 }
 
 const generateRandomCode = customAlphabet(CHARSET, LENGTH);
+
+const CACHE_TTL_SECONDS = 3600;
 
 type RedirectParams = {
   shortCode: string;
@@ -153,11 +156,34 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       return res.status(400).json({ message: "Bad Request!" });
     }
 
-    const [url] = await db
-      .select()
-      .from(urls)
-      .where(eq(urls.short, shortCode))
-      .limit(1);
+    let url: typeof urls.$inferSelect | undefined;
+
+    try {
+      const redis = await getRedisClient();
+      const cached = await redis.get(`url:${shortCode}`);
+      if (cached) url = JSON.parse(cached);
+    } catch (error) {
+      console.error("Redis unavailable, failing to connect to DB: ", error);
+    }
+
+    if (!url) {
+      [url] = await db
+        .select()
+        .from(urls)
+        .where(eq(urls.short, shortCode))
+        .limit(1);
+
+      if (url && url.status !== -1 && url.isLimit !== 1) {
+        try {
+          const redis = await getRedisClient();
+          await redis.set(`url:${shortCode}`, JSON.stringify(url), {
+            EX: CACHE_TTL_SECONDS,
+          });
+        } catch (cacheErr) {
+          console.error("Failed to populate cache:", cacheErr);
+        }
+      }
+    }
 
     if (!url || url.status === -1) {
       return res.status(404).json({ message: "Not found!" });
@@ -277,6 +303,13 @@ export async function updateUrl(req: Request, res: Response) {
 
     await db.update(urls).set(updatedValues).where(eq(urls.id, exists.id));
 
+    try {
+      const redis = await getRedisClient();
+      await redis.del(`url:${shortCode}`);
+    } catch (cacheErr) {
+      console.error("Failed to invalidate cache:", cacheErr);
+    }
+
     return res.status(200).json({ message: "Short URL updated successfully!" });
   } catch (error) {
     console.error(error);
@@ -312,6 +345,14 @@ export async function deleteUrl(req: Request, res: Response) {
     }
 
     await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
+
+    try {
+      const redis = await getRedisClient();
+      await redis.del(`url:${exist.short}`);
+    } catch (cacheErr) {
+      console.error("Failed to invalidate cache:", cacheErr);
+    }
+
     return res.status(200).json({ message: "Deleted successfully!" });
   } catch (error) {
     console.error(error);

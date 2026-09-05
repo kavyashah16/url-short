@@ -19,10 +19,13 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^1.0.0-rc.4-de6c356",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "geoip-lite": "^2.0.3",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.23.1",
-    "nanoid": "^6.0.0"
+    "nanoid": "^6.0.0",
+    "rate-limit-redis": "^6.0.1",
+    "redis": "^6.2.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
