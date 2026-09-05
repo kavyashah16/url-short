@@ -6,6 +6,7 @@ import { analyticsHelper } from "../utils/analyticsHelper.js";
 import bcrypt from "bcrypt";
 import { customAlphabet } from "nanoid";
 import dotenv from "dotenv";
+import { isValidAlias, isValidUrl, normalizeURL } from "../utils/urlUtils.js";
 dotenv.config();
 
 const CHARSET =
@@ -13,8 +14,10 @@ const CHARSET =
 
 const LENGTH = Number(process.env.LENGTH);
 
-if (Number.isNaN(LENGTH)) {
-  throw new Error("LENGTH must be a valid number in the .env file");
+if (Number.isNaN(LENGTH) || LENGTH < 6) {
+  throw new Error(
+    "LENGTH must be a number >= 6 in the .env file (shorter codes collide too often and are easier to guess).",
+  );
 }
 
 const generateRandomCode = customAlphabet(CHARSET, LENGTH);
@@ -27,10 +30,19 @@ export async function short(req: Request, res: Response) {
   try {
     const { url, customAlias, expiresAt, password, clickLimit } = req.body;
 
-    if (!url) {
+    if (!url || typeof url !== "string") {
       return res.status(400).json({ message: "URL is required!" });
     }
 
+    if (!isValidUrl(url)) {
+      return res
+        .status(400)
+        .json({ message: "Please provide a valid http/https URL." });
+    }
+
+    const normalizedUrl = normalizeURL(url);
+
+    const userId = req.user?.userId ? Number(req.user.userId) : null;
     const age = expiresAt ? new Date(expiresAt) : null;
 
     let hashPass = null;
@@ -54,6 +66,12 @@ export async function short(req: Request, res: Response) {
     let shortCode = "";
 
     if (customAlias) {
+      if (typeof customAlias !== "string" || !isValidAlias(customAlias)) {
+        return res.status(400).json({
+          message:
+            "Custom alias must be 3-30 characters (letters, numbers, - or _) and not a reserved word.",
+        });
+      }
       const [exist] = await db
         .select()
         .from(urls)
@@ -65,7 +83,8 @@ export async function short(req: Request, res: Response) {
       }
 
       await db.insert(urls).values({
-        url,
+        userId,
+        url: normalizedUrl,
         short: customAlias,
         customAlias: 1,
         age,
@@ -87,7 +106,8 @@ export async function short(req: Request, res: Response) {
         shortCode = generateRandomCode();
         try {
           await db.insert(urls).values({
-            url,
+            userId,
+            url: normalizedUrl,
             short: shortCode,
             customAlias: 0,
             age,
@@ -144,7 +164,7 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
     }
 
     if (url.status === 0) {
-      return res.status(410).json({ message: "Not active!" });
+      return res.status(403).json({ message: "Link is deactivated!" });
     }
 
     if (url.age && new Date(url.age) < new Date()) {
@@ -158,12 +178,12 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
         url.clickCount >= url.clickLimit
       ) {
         await db.update(urls).set({ status: 0 }).where(eq(urls.id, url.id));
-        return res.status(410).json({ message: "Limited reached!" });
+        return res.status(410).json({ message: "Limit reached!" });
       }
     }
 
     if (url.isPass === 1) {
-      if (!clientPass || typeof clientPass != "string") {
+      if (!clientPass || typeof clientPass !== "string") {
         return res
           .status(403)
           .json({ message: "Password required!", requiresPassword: true });
@@ -204,26 +224,27 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
 
 export async function updateUrl(req: Request, res: Response) {
   try {
-    const { id } = req.params;
+    const { shortCode } = req.params;
     const { url, password, clickLimit, status } = req.body;
 
-    if (typeof id != "string") {
-      return res.status(400).json({ message: "Invalid!" });
-    }
-
-    const urlId = parseInt(id, 10);
-    if (isNaN(urlId)) {
-      return res.status(400).json({ message: "Invalid!" });
+    if (!shortCode || typeof shortCode !== "string") {
+      return res.status(400).json({ message: "Invalid shortCode parameter!" });
     }
 
     const [exists] = await db
       .select()
       .from(urls)
-      .where(eq(urls.id, urlId))
+      .where(eq(urls.short, shortCode))
       .limit(1);
 
-    if (!exists) {
+    if (!exists || exists.status === -1) {
       return res.status(404).json({ message: "Link not found!" });
+    }
+
+    if (!req.user || exists.userId !== req.user.userId) {
+      return res
+        .status(403)
+        .json({ message: "Forbidden: You do not own this URL." });
     }
 
     let updatedValues: Record<string, any> = {};
@@ -254,7 +275,8 @@ export async function updateUrl(req: Request, res: Response) {
       }
     }
 
-    await db.update(urls).set(updatedValues).where(eq(urls.id, urlId));
+    await db.update(urls).set(updatedValues).where(eq(urls.id, exists.id));
+
     return res.status(200).json({ message: "Short URL updated successfully!" });
   } catch (error) {
     console.error(error);
@@ -266,11 +288,11 @@ export async function deleteUrl(req: Request, res: Response) {
   try {
     const { id } = req.params;
     if (typeof id !== "string") {
-      return res.status(400).json({ message: "Invalid!" });
+      return res.status(400).json({ message: "Invalid ID!" });
     }
     const val = parseInt(id, 10);
     if (isNaN(val)) {
-      return res.status(400).json({ message: "Invalid!" });
+      return res.status(400).json({ message: "Invalid ID!" });
     }
 
     const [exist] = await db
@@ -279,12 +301,18 @@ export async function deleteUrl(req: Request, res: Response) {
       .where(eq(urls.id, val))
       .limit(1);
 
-    if (!exist) {
-      return res.status(404).json({ message: "Doesn't Exist" });
+    if (!exist || exist.status === -1) {
+      return res.status(404).json({ message: "Link doesn't exist!" });
+    }
+
+    if (!req.user || exist.userId !== req.user.userId) {
+      return res
+        .status(403)
+        .json({ message: "Forbidden: You do not own this URL." });
     }
 
     await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
-    return res.status(200).json({ message: "Deleted!" });
+    return res.status(200).json({ message: "Deleted successfully!" });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Internal Server Error" });

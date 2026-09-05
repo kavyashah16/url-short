@@ -24,3 +24,19 @@ export function validateToken(req: Request, res: Response, next: NextFunction) {
     return res.status(403).json({ message: "Invalid token." });
   }
 }
+
+export function optionalAuth(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1]!;
+    try {
+      req.user = verifyToken(token);
+    } catch (error) {
+      req.user = null;
+    }
+  } else {
+    req.user = null;
+  }
+  next();
+}

@@ -8,6 +8,12 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core";
 
+export const users = mysqlTable("users", {
+  id: int().primaryKey().autoincrement(),
+  userName: varchar({ length: 255 }).unique(),
+  password: varchar({ length: 255 }).notNull(),
+});
+
 export const urls = mysqlTable("urls", {
   id: int().primaryKey().autoincrement(),
   url: text().notNull(),
@@ -34,8 +40,3 @@ export const analytics = mysqlTable("analytics", {
   referrer: varchar({ length: 255 }).notNull(),
 });
 
-export const users = mysqlTable("users", {
-  id: int().primaryKey().autoincrement(),
-  userName: varchar({ length: 255 }).unique(),
-  password: varchar({ length: 255 }).notNull(),
-});
