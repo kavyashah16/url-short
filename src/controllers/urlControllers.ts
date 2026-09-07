@@ -34,16 +34,6 @@ export async function short(req: Request, res: Response) {
   try {
     const { url, customAlias, expiresAt, password, clickLimit } = req.body;
 
-    if (!url || typeof url !== "string") {
-      return res.status(400).json({ message: "URL is required!" });
-    }
-
-    if (!isValidUrl(url)) {
-      return res
-        .status(400)
-        .json({ message: "Please provide a valid http/https URL." });
-    }
-
     const normalizedUrl = normalizeURL(url);
 
     const userId = req.user?.userId ? Number(req.user.userId) : null;
@@ -70,12 +60,6 @@ export async function short(req: Request, res: Response) {
     let shortCode = "";
 
     if (customAlias) {
-      if (typeof customAlias !== "string" || !isValidAlias(customAlias)) {
-        return res.status(400).json({
-          message:
-            "Custom alias must be 3-30 characters (letters, numbers, - or _) and not a reserved word.",
-        });
-      }
       const [exist] = await db
         .select()
         .from(urls)
