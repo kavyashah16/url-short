@@ -8,7 +8,7 @@ import {
 import { optionalAuth, validateToken } from "../middleWare/validateToken.js";
 import { redirectLimiter, shortLimiter } from "../middleWare/rateLimiter.js";
 import { validate } from "../middleWare/validate.js";
-import { shortUrlSchema } from "../schemas/urlSchema.js";
+import { shortUrlSchema } from "../schemas/urlSchemas.js";
 
 const router = Router();
 

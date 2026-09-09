@@ -9,6 +9,8 @@ import dotenv from "dotenv";
 import { isValidAlias, isValidUrl, normalizeURL } from "../utils/urlUtils.js";
 import { redisClient } from "../db/redis.js";
 import { analyticsQueue } from "../queues/analyticsQueue.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { AppError } from "../utils/AppError.js";
 dotenv.config();
 
 const CHARSET =
@@ -30,107 +32,98 @@ type RedirectParams = {
   shortCode: string;
 };
 
-export async function short(req: Request, res: Response) {
-  try {
-    const { url, customAlias, expiresAt, password, clickLimit } = req.body;
+export const short = asyncHandler(async (req: Request, res: Response) => {
+  const { url, customAlias, expiresAt, password, clickLimit } = req.body;
+  const normalizedUrl = normalizeURL(url);
 
-    const normalizedUrl = normalizeURL(url);
+  const userId = req.user?.userId ? Number(req.user.userId) : null;
+  const age = expiresAt ? new Date(expiresAt) : null;
 
-    const userId = req.user?.userId ? Number(req.user.userId) : null;
-    const age = expiresAt ? new Date(expiresAt) : null;
+  let hashPass = null;
+  let isPass = 0;
 
-    let hashPass = null;
-    let isPass = 0;
-
-    if (password && password.trim() !== "") {
-      hashPass = await bcrypt.hash(password, 10);
-      isPass = 1;
-    }
-
-    let parseLimit = null;
-    let isLimit = 0;
-    if (clickLimit !== undefined && clickLimit !== null) {
-      const val = parseInt(clickLimit, 10);
-      if (!isNaN(val) && val > 0) {
-        parseLimit = val;
-        isLimit = 1;
-      }
-    }
-
-    let shortCode = "";
-
-    if (customAlias) {
-      const [exist] = await db
-        .select()
-        .from(urls)
-        .where(eq(urls.short, customAlias))
-        .limit(1);
-
-      if (exist) {
-        return res.status(409).json({ message: "Already exists!" });
-      }
-
-      await db.insert(urls).values({
-        userId,
-        url: normalizedUrl,
-        short: customAlias,
-        customAlias: 1,
-        age,
-        status: 1,
-        password: hashPass,
-        isPass,
-        clickLimit: parseLimit,
-        isLimit,
-        clickCount: 0,
-      });
-
-      shortCode = customAlias;
-    } else {
-      const MAX_RETRIES = 3;
-      let attempts = 0;
-      let inserted = false;
-
-      while (attempts < MAX_RETRIES && !inserted) {
-        shortCode = generateRandomCode();
-        try {
-          await db.insert(urls).values({
-            userId,
-            url: normalizedUrl,
-            short: shortCode,
-            customAlias: 0,
-            age,
-            status: 1,
-            password: hashPass,
-            isPass,
-            clickLimit: parseLimit,
-            isLimit,
-            clickCount: 0,
-          });
-          inserted = true;
-        } catch (dbError: any) {
-          const isCollision =
-            dbError.errno === 1062 || dbError.code === "23505";
-          if (isCollision) {
-            attempts++;
-            continue;
-          }
-          throw dbError;
-        }
-      }
-
-      if (!inserted) {
-        return res
-          .status(500)
-          .json({ message: "Failed to generate unique short link." });
-      }
-    }
-
-    return res.status(201).json({ shortCode });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error" });
+  if (password && password.trim() !== "") {
+    hashPass = await bcrypt.hash(password, 10);
+    isPass = 1;
   }
-}
+
+  let parseLimit = null;
+  let isLimit = 0;
+  if (clickLimit !== undefined && clickLimit !== null) {
+    const val = parseInt(clickLimit, 10);
+    if (!isNaN(val) && val > 0) {
+      parseLimit = val;
+      isLimit = 1;
+    }
+  }
+
+  let shortCode = "";
+
+  if (customAlias) {
+    const [exist] = await db
+      .select()
+      .from(urls)
+      .where(eq(urls.short, customAlias))
+      .limit(1);
+
+    if (exist) {
+      throw new AppError("Already exists!", 409);
+    }
+
+    await db.insert(urls).values({
+      userId,
+      url: normalizedUrl,
+      short: customAlias,
+      customAlias: 1,
+      age,
+      status: 1,
+      password: hashPass,
+      isPass,
+      clickLimit: parseLimit,
+      isLimit,
+      clickCount: 0,
+    });
+
+    shortCode = customAlias;
+  } else {
+    const MAX_RETRIES = 3;
+    let attempts = 0;
+    let inserted = false;
+
+    while (attempts < MAX_RETRIES && !inserted) {
+      shortCode = generateRandomCode();
+      try {
+        await db.insert(urls).values({
+          userId,
+          url: normalizedUrl,
+          short: shortCode,
+          customAlias: 0,
+          age,
+          status: 1,
+          password: hashPass,
+          isPass,
+          clickLimit: parseLimit,
+          isLimit,
+          clickCount: 0,
+        });
+        inserted = true;
+      } catch (dbError: any) {
+        const isCollision = dbError.errno === 1062 || dbError.code === "23505";
+        if (isCollision) {
+          attempts++;
+          continue;
+        }
+        throw dbError;
+      }
+    }
+
+    if (!inserted) {
+      throw new AppError("Failed to generate unique short link.", 500);
+    }
+  }
+
+  return res.status(201).json({ shortCode });
+});
 
 export async function redirect(req: Request<RedirectParams>, res: Response) {
   try {
