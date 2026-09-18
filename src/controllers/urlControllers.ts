@@ -125,13 +125,13 @@ export const short = asyncHandler(async (req: Request, res: Response) => {
   return res.status(201).json({ shortCode });
 });
 
-export async function redirect(req: Request<RedirectParams>, res: Response) {
-  try {
+export const redirect = asyncHandler(
+  async (req: Request<RedirectParams>, res: Response) => {
     const { shortCode } = req.params;
     const clientPass = req.headers["x-link-password"];
 
     if (!shortCode) {
-      return res.status(400).json({ message: "Bad Request!" });
+      throw new AppError("Bad Request", 400);
     }
 
     let url: typeof urls.$inferSelect | undefined;
@@ -162,15 +162,15 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
     }
 
     if (!url || url.status === -1) {
-      return res.status(404).json({ message: "Not found!" });
+      throw new AppError("Not found!", 404);
     }
 
     if (url.status === 0) {
-      return res.status(403).json({ message: "Link is deactivated!" });
+      throw new AppError("Link is deactivated!", 403);
     }
 
     if (url.age && new Date(url.age) < new Date()) {
-      return res.status(410).json({ message: "Expired!" });
+      throw new AppError("Expired!", 410);
     }
 
     if (url.isLimit === 1) {
@@ -180,20 +180,20 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
         url.clickCount >= url.clickLimit
       ) {
         await db.update(urls).set({ status: 0 }).where(eq(urls.id, url.id));
-        return res.status(410).json({ message: "Limit reached!" });
+        throw new AppError("Limit reached!", 410);
       }
     }
 
     if (url.isPass === 1) {
       if (!clientPass || typeof clientPass !== "string") {
-        return res
-          .status(403)
-          .json({ message: "Password required!", requiresPassword: true });
+        throw new AppError("Password required!", 403, {
+          requiresPassword: true,
+        });
       }
       const match = await bcrypt.compare(clientPass, url.password || "");
 
       if (!match) {
-        return res.status(401).json({ message: "Password Invalid!" });
+        throw new AppError("Password Invalid!", 401);
       }
     }
 
@@ -218,118 +218,97 @@ export async function redirect(req: Request<RedirectParams>, res: Response) {
       .catch((err) => {
         console.error("Failed to enqueue analytics job:", err);
       });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error" });
+  },
+);
+
+export const updateUrl = asyncHandler(async (req: Request, res: Response) => {
+  const { shortCode } = req.params;
+  const { url, password, clickLimit, status } = req.body;
+
+  if (!shortCode || typeof shortCode !== "string") {
+    throw new AppError("Invalid shortCode parameter!", 400);
   }
-}
 
-export async function updateUrl(req: Request, res: Response) {
-  try {
-    const { shortCode } = req.params;
-    const { url, password, clickLimit, status } = req.body;
+  const [exists] = await db
+    .select()
+    .from(urls)
+    .where(eq(urls.short, shortCode))
+    .limit(1);
 
-    if (!shortCode || typeof shortCode !== "string") {
-      return res.status(400).json({ message: "Invalid shortCode parameter!" });
+  if (!exists || exists.status === -1) {
+    throw new AppError("Link not found!", 404);
+  }
+
+  if (!req.user || exists.userId !== req.user.userId) {
+    throw new AppError("Forbidden: You do not own this URL.", 403);
+  }
+
+  let updatedValues: Record<string, any> = {};
+
+  if (url) updatedValues.url = url;
+  if (status !== undefined) updatedValues.status = status;
+
+  if (password !== undefined) {
+    if (password.trim() === "") {
+      updatedValues.password = null;
+      updatedValues.isPass = 0;
+    } else {
+      updatedValues.password = await bcrypt.hash(password, 10);
+      updatedValues.isPass = 1;
     }
+  }
 
-    const [exists] = await db
-      .select()
-      .from(urls)
-      .where(eq(urls.short, shortCode))
-      .limit(1);
-
-    if (!exists || exists.status === -1) {
-      return res.status(404).json({ message: "Link not found!" });
-    }
-
-    if (!req.user || exists.userId !== req.user.userId) {
-      return res
-        .status(403)
-        .json({ message: "Forbidden: You do not own this URL." });
-    }
-
-    let updatedValues: Record<string, any> = {};
-
-    if (url) updatedValues.url = url;
-    if (status !== undefined) updatedValues.status = status;
-
-    if (password !== undefined) {
-      if (password.trim() === "") {
-        updatedValues.password = null;
-        updatedValues.isPass = 0;
-      } else {
-        updatedValues.password = await bcrypt.hash(password, 10);
-        updatedValues.isPass = 1;
+  if (clickLimit !== undefined) {
+    if (clickLimit === null || clickLimit === "") {
+      updatedValues.clickLimit = null;
+      updatedValues.isLimit = 0;
+    } else {
+      const val = parseInt(clickLimit, 10);
+      if (!isNaN(val) && val > 0) {
+        updatedValues.clickLimit = val;
+        updatedValues.isLimit = 1;
       }
     }
-
-    if (clickLimit !== undefined) {
-      if (clickLimit === null || clickLimit === "") {
-        updatedValues.clickLimit = null;
-        updatedValues.isLimit = 0;
-      } else {
-        const val = parseInt(clickLimit, 10);
-        if (!isNaN(val) && val > 0) {
-          updatedValues.clickLimit = val;
-          updatedValues.isLimit = 1;
-        }
-      }
-    }
-
-    await db.update(urls).set(updatedValues).where(eq(urls.id, exists.id));
-
-    try {
-      await redisClient.del(`url:${shortCode}`);
-    } catch (cacheErr) {
-      console.error("Failed to invalidate cache:", cacheErr);
-    }
-
-    return res.status(200).json({ message: "Short URL updated successfully!" });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error" });
   }
-}
 
-export async function deleteUrl(req: Request, res: Response) {
+  await db.update(urls).set(updatedValues).where(eq(urls.id, exists.id));
+
   try {
-    const { id } = req.params;
-    if (typeof id !== "string") {
-      return res.status(400).json({ message: "Invalid ID!" });
-    }
-    const val = parseInt(id, 10);
-    if (isNaN(val)) {
-      return res.status(400).json({ message: "Invalid ID!" });
-    }
-
-    const [exist] = await db
-      .select()
-      .from(urls)
-      .where(eq(urls.id, val))
-      .limit(1);
-
-    if (!exist || exist.status === -1) {
-      return res.status(404).json({ message: "Link doesn't exist!" });
-    }
-
-    if (!req.user || exist.userId !== req.user.userId) {
-      return res
-        .status(403)
-        .json({ message: "Forbidden: You do not own this URL." });
-    }
-
-    await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
-
-    try {
-      await redisClient.del(`url:${exist.short}`);
-    } catch (cacheErr) {
-      console.error("Failed to invalidate cache:", cacheErr);
-    }
-
-    return res.status(200).json({ message: "Deleted successfully!" });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error" });
+    await redisClient.del(`url:${shortCode}`);
+  } catch (cacheErr) {
+    console.error("Failed to invalidate cache:", cacheErr);
   }
-}
+
+  return res.status(200).json({ message: "Short URL updated successfully!" });
+});
+
+export const deleteUrl = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (typeof id !== "string") {
+    throw new AppError("Invalid ID!", 400);
+  }
+  const val = parseInt(id, 10);
+  if (isNaN(val)) {
+    throw new AppError("Invalid ID!", 400);
+  }
+
+  const [exist] = await db.select().from(urls).where(eq(urls.id, val)).limit(1);
+
+  if (!exist || exist.status === -1) {
+    throw new AppError("Link doesn't exist!", 404);
+  }
+
+  if (!req.user || exist.userId !== req.user.userId) {
+    throw new AppError("Forbidden: You do not own this URL.", 403);
+  }
+
+  await db.update(urls).set({ status: -1 }).where(eq(urls.id, val));
+
+  try {
+    await redisClient.del(`url:${exist.short}`);
+  } catch (cacheErr) {
+    console.error("Failed to invalidate cache:", cacheErr);
+  }
+
+  return res.status(200).json({ message: "Deleted successfully!" });
+});

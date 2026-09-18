@@ -9,7 +9,9 @@ export function errorHandler(
 ) {
   if (err instanceof AppError) {
     req.log.warn({ err }, err.message);
-    return res.status(err.statusCode).json({ message: err.message });
+    return res
+      .status(err.statusCode)
+      .json({ message: err.message, ...err.details });
   }
 
   req.log.error({ err }, "Unhandled error");
