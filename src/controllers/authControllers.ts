@@ -4,47 +4,44 @@ import { users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import { generateToken } from "../utils/jwt.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { AppError } from "../utils/AppError.js";
 
-export async function loginUser(req: Request, res: Response) {
-  try {
-    const { userName, password } = req.body;
+export const loginUser = asyncHandler(async (req: Request, res: Response) => {
+  const { userName, password } = req.body;
 
-    const [exists] = await db
-      .select()
-      .from(users)
-      .where(eq(users.userName, userName));
+  const [exists] = await db
+    .select()
+    .from(users)
+    .where(eq(users.userName, userName));
 
-    if (!exists) {
-      return res.status(404).json({ message: "User not registered!" });
-    }
-
-    const isPassCorrect = await bcrypt.compare(password, exists.password);
-
-    if (!isPassCorrect) {
-      return res.status(401).json({ message: "Password is incorrect!" });
-    }
-
-    const token = generateToken({
-      userId: exists.id,
-      userName,
-    });
-
-    return res.status(200).json({
-      message: "Login done!",
-      token,
-      user: {
-        id: exists.id,
-        userName: exists.userName,
-      },
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error" });
+  if (!exists) {
+    throw new AppError("User not registered!", 404);
   }
-}
 
-export async function registerUser(req: Request, res: Response) {
-  try {
+  const isPassCorrect = await bcrypt.compare(password, exists.password);
+
+  if (!isPassCorrect) {
+    throw new AppError("Password is incorrect!", 401);
+  }
+
+  const token = generateToken({
+    userId: exists.id,
+    userName,
+  });
+
+  return res.status(200).json({
+    message: "Login done!",
+    token,
+    user: {
+      id: exists.id,
+      userName: exists.userName,
+    },
+  });
+});
+
+export const registerUser = asyncHandler(
+  async (req: Request, res: Response) => {
     const { userName, password } = req.body;
 
     const [existingUser] = await db
@@ -53,30 +50,32 @@ export async function registerUser(req: Request, res: Response) {
       .where(eq(users.userName, userName));
 
     if (existingUser) {
-      return res.status(409).json({ message: "Username exists!" });
+      throw new AppError("Username exists!", 409);
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
     const [newUser] = await db
       .insert(users)
       .values({ userName, password: hashedPassword })
       .$returningId();
-      
+
     if (!newUser?.id) {
-      return res.status(500).json({ message: "Failed to create user." });
+      throw new AppError("Failed to create user.", 500);
     }
+
     const token = generateToken({
-      userId: newUser!.id,
+      userId: newUser.id,
       userName,
     });
 
     return res.status(201).json({
       message: "Registered!",
       token,
-      user: { id: newUser?.id, userName },
+      user: {
+        id: newUser.id,
+        userName,
+      },
     });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal Server Error!" });
-  }
-}
+  },
+);
