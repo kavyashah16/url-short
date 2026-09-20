@@ -1,8 +1,13 @@
 import { Router } from "express";
-import { loginUser, registerUser } from "../controllers/authControllers.js";
+import {
+  getMe,
+  loginUser,
+  registerUser,
+} from "../controllers/authControllers.js";
 import { authLimiter } from "../middleWare/rateLimiter.js";
 import { validate } from "../middleWare/validate.js";
 import { loginSchema, registrationSchema } from "../schemas/authSchemas.js";
+import { validateToken } from "../middleWare/validateToken.js";
 
 const router = Router();
 
@@ -13,5 +18,6 @@ router.post(
   validate(registrationSchema),
   registerUser,
 );
+router.get("/me", validateToken, getMe);
 
 export default router;

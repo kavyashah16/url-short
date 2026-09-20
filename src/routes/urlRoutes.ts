@@ -1,6 +1,10 @@
 import { Router } from "express";
 import {
+  claimGuestLinks,
   deleteUrl,
+  getLinkDetails,
+  getMyLinks,
+  getPublicStats,
   redirect,
   short,
   updateUrl,
@@ -11,6 +15,11 @@ import { validate } from "../middleWare/validate.js";
 import { shortUrlSchema } from "../schemas/urlSchemas.js";
 
 const router = Router();
+
+router.get("/my-links", validateToken, getMyLinks);
+router.get("/details/:shortCode", validateToken, getLinkDetails);
+router.get("/stats", getPublicStats);
+router.put("/claim", validateToken, claimGuestLinks);
 
 router.post(
   "/short",

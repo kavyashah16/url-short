@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { db } from "../db/index.js";
 import { analytics, urls } from "../db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { analyticsHelper } from "../utils/analyticsHelper.js";
 import bcrypt from "bcrypt";
 import { customAlphabet } from "nanoid";
@@ -239,7 +239,7 @@ export const updateUrl = asyncHandler(async (req: Request, res: Response) => {
     throw new AppError("Link not found!", 404);
   }
 
-  if (!req.user || exists.userId !== req.user.userId) {
+  if (!req.user || exists.userId !== Number(req.user.userId)) {
     throw new AppError("Forbidden: You do not own this URL.", 403);
   }
 
@@ -298,7 +298,7 @@ export const deleteUrl = asyncHandler(async (req: Request, res: Response) => {
     throw new AppError("Link doesn't exist!", 404);
   }
 
-  if (!req.user || exist.userId !== req.user.userId) {
+  if (!req.user || exist.userId !== Number(req.user.userId)) {
     throw new AppError("Forbidden: You do not own this URL.", 403);
   }
 
@@ -312,3 +312,197 @@ export const deleteUrl = asyncHandler(async (req: Request, res: Response) => {
 
   return res.status(200).json({ message: "Deleted successfully!" });
 });
+
+export const getPublicStats = asyncHandler(
+  async (req: Request, res: Response) => {
+    const [stats] = await db
+      .select({
+        totalLinks: sql<number>`count(*)`,
+        totalClicks: sql<number>`coalesce(sum(${urls.clickCount}), 0)`,
+      })
+      .from(urls)
+      .where(ne(urls.status, -1));
+
+    return res.status(200).json({
+      totalLinks: Number(stats?.totalLinks ?? 0),
+      totalClicks: Number(stats?.totalClicks ?? 0),
+    });
+  },
+);
+
+export const claimGuestLinks = asyncHandler(
+  async (req: Request, res: Response) => {
+    if (!req.user) {
+      throw new AppError("Unauthorized", 401);
+    }
+
+    const { shortCodes } = req.body;
+
+    if (!Array.isArray(shortCodes)) {
+      throw new AppError("shortCodes must be an array.", 400);
+    }
+
+    const cleanCodes = [
+      ...new Set(
+        shortCodes
+          .filter((code) => typeof code === "string")
+          .map((code) => code.trim())
+          .filter(Boolean),
+      ),
+    ].slice(0, 50);
+
+    if (cleanCodes.length === 0) {
+      return res.status(200).json({ claimed: 0 });
+    }
+
+    const ownedLinks = await db
+      .select({ id: urls.id, short: urls.short })
+      .from(urls)
+      .where(
+        and(
+          inArray(urls.short, cleanCodes),
+          isNull(urls.userId),
+          ne(urls.status, -1),
+        ),
+      );
+
+    if (ownedLinks.length === 0) {
+      return res.status(200).json({ claimed: 0 });
+    }
+
+    await db
+      .update(urls)
+      .set({ userId: Number(req.user.userId) })
+      .where(inArray(urls.id, ownedLinks.map((link) => link.id)));
+
+    await Promise.all(
+      ownedLinks.map((link) => redisClient.del(`url:${link.short}`).catch(() => null)),
+    );
+
+    return res.status(200).json({ claimed: ownedLinks.length });
+  },
+);
+
+export const getMyLinks = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new AppError("Unauthorized", 401);
+  }
+
+  const links = await db
+    .select({
+      id: urls.id,
+      url: urls.url,
+      short: urls.short,
+      customAlias: urls.customAlias,
+      age: urls.age,
+      isPass: urls.isPass,
+      clickLimit: urls.clickLimit,
+      isLimit: urls.isLimit,
+      clickCount: urls.clickCount,
+      status: urls.status,
+    })
+    .from(urls)
+    .where(and(eq(urls.userId, Number(req.user.userId)), ne(urls.status, -1)))
+    .orderBy(desc(urls.id));
+
+  return res.status(200).json({ links });
+});
+
+export const getLinkDetails = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { shortCode } = req.params;
+    if (!shortCode || typeof shortCode !== "string") {
+      throw new AppError("Invalid shortCode parameter!", 400);
+    }
+
+    const [link] = await db
+      .select()
+      .from(urls)
+      .where(eq(urls.short, shortCode))
+      .limit(1);
+
+    if (!link || link.status === -1) {
+      throw new AppError("Link not found!", 404);
+    }
+
+    if (!req.user || link.userId !== Number(req.user.userId)) {
+      throw new AppError("Forbidden: You do not own this URL.", 403);
+    }
+
+    const { password, ...safeLink } = link;
+    const [countryRows, browserRows, deviceRows, referrerRows, recentClicks] =
+      await Promise.all([
+        db
+          .select({
+            country: analytics.country,
+            clicks: sql<number>`count(*)`,
+          })
+          .from(analytics)
+          .where(eq(analytics.urlId, link.id))
+          .groupBy(analytics.country)
+          .orderBy(sql`count(*) desc`),
+        db
+          .select({
+            browser: analytics.browser,
+            clicks: sql<number>`count(*)`,
+          })
+          .from(analytics)
+          .where(eq(analytics.urlId, link.id))
+          .groupBy(analytics.browser)
+          .orderBy(sql`count(*) desc`),
+        db
+          .select({
+            device: analytics.device,
+            clicks: sql<number>`count(*)`,
+          })
+          .from(analytics)
+          .where(eq(analytics.urlId, link.id))
+          .groupBy(analytics.device)
+          .orderBy(sql`count(*) desc`),
+        db
+          .select({
+            referrer: analytics.referrer,
+            clicks: sql<number>`count(*)`,
+          })
+          .from(analytics)
+          .where(eq(analytics.urlId, link.id))
+          .groupBy(analytics.referrer)
+          .orderBy(sql`count(*) desc`),
+        db
+          .select({
+            times: analytics.times,
+            country: analytics.country,
+            browser: analytics.browser,
+            device: analytics.device,
+            referrer: analytics.referrer,
+          })
+          .from(analytics)
+          .where(eq(analytics.urlId, link.id))
+          .orderBy(desc(analytics.times))
+          .limit(12),
+      ]);
+
+    return res.status(200).json({
+      link: safeLink,
+      analytics: {
+        countries: countryRows.map((row) => ({
+          country: row.country,
+          clicks: Number(row.clicks),
+        })),
+        browsers: browserRows.map((row) => ({
+          browser: row.browser,
+          clicks: Number(row.clicks),
+        })),
+        devices: deviceRows.map((row) => ({
+          device: row.device,
+          clicks: Number(row.clicks),
+        })),
+        referrers: referrerRows.map((row) => ({
+          referrer: row.referrer,
+          clicks: Number(row.clicks),
+        })),
+        recentClicks,
+      },
+    });
+  },
+);
