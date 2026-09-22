@@ -1,6 +1,7 @@
-import { RefreshCw, X } from "lucide-react";
+import { RefreshCw, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { isValidHttpUrl } from "../urlValidation";
 import LinkList from "./LinkList";
 
 const emptyAnalytics = {
@@ -16,6 +17,7 @@ const initialEditForm = {
   status: "1",
   clickLimit: "",
   password: "",
+  removePassword: false,
 };
 
 export default function Dashboard({ user }) {
@@ -28,6 +30,7 @@ export default function Dashboard({ user }) {
   const [detailsError, setDetailsError] = useState("");
   const [editingLink, setEditingLink] = useState(null);
   const [editForm, setEditForm] = useState(initialEditForm);
+  const [editError, setEditError] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
   async function loadLinks() {
@@ -86,13 +89,16 @@ export default function Dashboard({ user }) {
       status: String(link.status ?? 1),
       clickLimit: link.isLimit === 1 && link.clickLimit ? String(link.clickLimit) : "",
       password: "",
+      removePassword: false,
     });
     setError("");
+    setEditError("");
   }
 
   function cancelEdit() {
     setEditingLink(null);
     setEditForm(initialEditForm);
+    setEditError("");
   }
 
   function updateEditField(name, value) {
@@ -104,6 +110,13 @@ export default function Dashboard({ user }) {
     if (!editingLink) return;
 
     setError("");
+    setEditError("");
+
+    if (!isValidHttpUrl(editForm.url)) {
+      setEditError("Please enter a valid http or https URL.");
+      return;
+    }
+
     setSavingEdit(true);
 
     const payload = {
@@ -112,7 +125,9 @@ export default function Dashboard({ user }) {
       clickLimit: editForm.clickLimit ? Number(editForm.clickLimit) : "",
     };
 
-    if (editForm.password.trim()) {
+    if (editForm.removePassword) {
+      payload.password = "";
+    } else if (editForm.password.trim()) {
       payload.password = editForm.password.trim();
     }
 
@@ -127,7 +142,12 @@ export default function Dashboard({ user }) {
                 status: payload.status,
                 clickLimit: payload.clickLimit === "" ? null : payload.clickLimit,
                 isLimit: payload.clickLimit === "" ? 0 : 1,
-                isPass: payload.password ? 1 : link.isPass,
+                isPass:
+                  payload.password === ""
+                    ? 0
+                    : payload.password
+                      ? 1
+                      : link.isPass,
               }
             : link,
         ),
@@ -181,7 +201,7 @@ export default function Dashboard({ user }) {
             <h2>Your links</h2>
           </div>
           <button
-            className="secondary-action"
+            className="secondary-action refresh-action"
             type="button"
             onClick={loadLinks}
             disabled={loading}
@@ -197,18 +217,129 @@ export default function Dashboard({ user }) {
         ) : (
           <LinkList
             links={links}
-            editingLinkId={editingLink?.id}
-            editForm={editForm}
-            savingEdit={savingEdit}
             onDelete={handleDelete}
             onEdit={startEdit}
             onOpenDetails={openDetails}
-            onCancelEdit={cancelEdit}
-            onSaveEdit={saveEdit}
-            onEditFieldChange={updateEditField}
           />
         )}
       </section>
+
+      {editingLink && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="edit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-link-title"
+          >
+            <button
+              className="modal-close"
+              type="button"
+              aria-label="close edit link"
+              onClick={cancelEdit}
+            >
+              <X aria-hidden="true" />
+            </button>
+
+            <div className="modal-heading edit-heading">
+              <p>{editingLink.short}</p>
+              <h2 id="edit-link-title">Edit link</h2>
+            </div>
+
+            <form className="edit-link-form" onSubmit={saveEdit} noValidate>
+              <label>
+                Destination URL
+                <input
+                  type="url"
+                  value={editForm.url}
+                  onChange={(event) => updateEditField("url", event.target.value)}
+                  required
+                />
+              </label>
+
+              {editError && <p className="form-message error edit-form-message">{editError}</p>}
+
+              <label>
+                Status
+                <select
+                  value={editForm.status}
+                  onChange={(event) => updateEditField("status", event.target.value)}
+                >
+                  <option value="1">Active</option>
+                  <option value="0">Paused</option>
+                </select>
+              </label>
+
+              <label className="edit-click-limit-field">
+                Click limit
+                <input
+                  type="number"
+                  min="1"
+                  placeholder="No limit"
+                  value={editForm.clickLimit}
+                  onChange={(event) =>
+                    updateEditField("clickLimit", event.target.value)
+                  }
+                />
+              </label>
+
+              <div className="password-edit-field">
+                <label>
+                  Password
+                  <input
+                    type="text"
+                    placeholder={
+                      editingLink.isPass === 1
+                        ? "Leave blank to keep current password"
+                        : "Optional password"
+                    }
+                    value={editForm.password}
+                    disabled={editForm.removePassword}
+                    onChange={(event) =>
+                      updateEditField("password", event.target.value)
+                    }
+                  />
+                </label>
+
+                {editingLink.isPass === 1 && (
+                  <>
+                    <label className="checkbox-field">
+                      <input
+                        type="checkbox"
+                        checked={editForm.removePassword}
+                        onChange={(event) =>
+                          updateEditField("removePassword", event.target.checked)
+                        }
+                      />
+                      Remove password
+                    </label>
+                    <span>Leave blank to keep the current password unchanged.</span>
+                  </>
+                )}
+              </div>
+
+              <div className="edit-actions">
+                <button
+                  className="save-edit-action"
+                  type="submit"
+                  disabled={savingEdit}
+                >
+                  <Save aria-hidden="true" />
+                  {savingEdit ? "Saving..." : "Save"}
+                </button>
+                <button
+                  className="cancel-edit-action"
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={savingEdit}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {selectedLink && (
         <div className="modal-backdrop analytics-backdrop" role="presentation">
@@ -252,6 +383,17 @@ function LinkAnalytics({ link, analytics }) {
   const devices = analytics.devices || [];
   const referrers = analytics.referrers || [];
   const recentClicks = analytics.recentClicks || [];
+  const [clickPageSize, setClickPageSize] = useState(5);
+  const [clickPage, setClickPage] = useState(1);
+  const totalClickPages = Math.max(1, Math.ceil(recentClicks.length / clickPageSize));
+  const safeClickPage = Math.min(clickPage, totalClickPages);
+  const clickStart = (safeClickPage - 1) * clickPageSize;
+  const visibleClicks = recentClicks.slice(clickStart, clickStart + clickPageSize);
+
+  function changePageSize(value) {
+    setClickPageSize(Number(value));
+    setClickPage(1);
+  }
 
   return (
     <div className="analytics-content">
@@ -259,8 +401,21 @@ function LinkAnalytics({ link, analytics }) {
         <Metric label="Clicks" value={link.clickCount ?? 0} />
         <Metric label="Status" value={link.status === 1 ? "Active" : "Paused"} />
         <Metric label="Limit" value={link.isLimit === 1 ? link.clickLimit : "None"} />
-        <Metric label="Password" value={link.isPass === 1 ? "On" : "Off"} />
+        <Metric label="Password" value={link.isPass === 1 ? "Protected" : "Off"} />
       </div>
+
+      {link.isPass === 1 && (
+        <div className="password-status-panel">
+          <div>
+            <span>Password protected</span>
+            <strong>Unavailable</strong>
+          </div>
+          <p>
+            This password is stored as a bcrypt hash, so the original value cannot
+            be recovered. Replace it from Edit if it needs to change.
+          </p>
+        </div>
+      )}
 
       <div className="analytics-map" aria-label="click locations map">
         <div className="map-grid" aria-hidden="true" />
@@ -292,21 +447,60 @@ function LinkAnalytics({ link, analytics }) {
       </div>
 
       <div className="recent-clicks">
-        <h3>Recent clicks</h3>
+        <div className="recent-clicks-header">
+          <h3>Recent clicks</h3>
+          <label>
+            Rows
+            <select
+              value={clickPageSize}
+              onChange={(event) => changePageSize(event.target.value)}
+            >
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+            </select>
+          </label>
+        </div>
         {recentClicks.length === 0 ? (
           <p>No clicks recorded yet.</p>
         ) : (
-          <div className="click-table">
-            {recentClicks.map((click, index) => (
-              <div className="click-row" key={`${click.times}-${index}`}>
-                <span>{formatDate(click.times)}</span>
-                <span>{click.country || "Unknown"}</span>
-                <span>{click.browser || "Unknown"}</span>
-                <span>{click.device || "Unknown"}</span>
-                <span>{click.referrer || "Direct"}</span>
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="click-table">
+              {visibleClicks.map((click, index) => (
+                <div className="click-row" key={`${click.times}-${clickStart + index}`}>
+                  <span>{formatDate(click.times)}</span>
+                  <span>{click.country || "Unknown"}</span>
+                  <span>{click.browser || "Unknown"}</span>
+                  <span>{click.device || "Unknown"}</span>
+                  <span>{click.referrer || "Direct"}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="pagination-controls">
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => setClickPage((page) => Math.max(1, page - 1))}
+                disabled={safeClickPage === 1}
+              >
+                Previous
+              </button>
+              <span>
+                Page {safeClickPage} of {totalClickPages}
+              </span>
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() =>
+                  setClickPage((page) => Math.min(totalClickPages, page + 1))
+                }
+                disabled={safeClickPage === totalClickPages}
+              >
+                Next
+              </button>
+            </div>
+          </>
         )}
       </div>
     </div>

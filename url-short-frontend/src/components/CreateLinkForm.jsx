@@ -1,6 +1,7 @@
 import { CalendarDays, Copy } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { addPendingGuestLink, api, shortUrl } from "../api";
+import { isValidHttpUrl } from "../urlValidation";
 
 const initialForm = {
   url: "",
@@ -48,6 +49,12 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
     event.preventDefault();
     setError("");
     setCreatedCode("");
+
+    if (!isValidHttpUrl(form.url)) {
+      setError("Please enter a valid http or https URL.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -82,7 +89,12 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
   }
 
   return (
-    <form className={`create-link-form ${variant}`} onSubmit={handleSubmit}>
+    <form
+      className={`create-link-form ${variant}`}
+      onSubmit={handleSubmit}
+      autoComplete="off"
+      noValidate
+    >
       <div className="form-heading-row">
         <h2>Create short link</h2>
         <button
@@ -102,6 +114,8 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
           type="url"
           placeholder="https://example.com/product/very-long-link"
           value={form.url}
+          autoComplete="off"
+          data-lpignore="true"
           onChange={(event) => updateField("url", event.target.value)}
           required
         />
@@ -114,6 +128,8 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
           type="text"
           placeholder="launch-2026"
           value={form.customAlias}
+          autoComplete="off"
+          data-lpignore="true"
           onChange={(event) => updateField("customAlias", event.target.value)}
           minLength={3}
           maxLength={30}
@@ -133,6 +149,7 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
                 id={`${variant}-expiresAt`}
                 type="datetime-local"
                 value={form.expiresAt}
+                autoComplete="off"
                 tabIndex={showAdvanced ? 0 : -1}
                 onChange={(event) =>
                   updateField("expiresAt", event.target.value)
@@ -157,6 +174,7 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
               min="1"
               placeholder="250"
               value={form.clickLimit}
+              autoComplete="off"
               tabIndex={showAdvanced ? 0 : -1}
               onChange={(event) =>
                 updateField("clickLimit", event.target.value)
@@ -171,6 +189,8 @@ export default function CreateLinkForm({ onCreated, variant = "hero" }) {
               type="password"
               placeholder="optional access key"
               value={form.password}
+              autoComplete="new-password"
+              data-lpignore="true"
               tabIndex={showAdvanced ? 0 : -1}
               onChange={(event) => updateField("password", event.target.value)}
               maxLength={100}

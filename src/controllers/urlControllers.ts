@@ -32,6 +32,65 @@ type RedirectParams = {
   shortCode: string;
 };
 
+async function logClickAndRedirect(
+  req: Request<RedirectParams>,
+  res: Response,
+  url: typeof urls.$inferSelect,
+) {
+  await db
+    .update(urls)
+    .set({ clickCount: sql`${urls.clickCount} + 1` })
+    .where(eq(urls.id, url.id));
+
+  res.redirect(302, url.url);
+
+  const metaData = analyticsHelper(req);
+
+  analyticsQueue
+    .add("log-click", {
+      urlId: url.id,
+      ipAddress: metaData.ipAddress,
+      country: metaData.country,
+      browser: metaData.browser,
+      device: metaData.device,
+      referrer: metaData.referrer,
+    })
+    .catch((err) => {
+      console.error("Failed to enqueue analytics job:", err);
+    });
+}
+
+async function getRedirectUrl(shortCode: string) {
+  let url: typeof urls.$inferSelect | undefined;
+
+  try {
+    const cached = await redisClient.get(`url:${shortCode}`);
+    if (cached) url = JSON.parse(cached);
+  } catch (error) {
+    console.error("Redis unavailable, falling back to DB:", error);
+  }
+
+  if (!url) {
+    [url] = await db
+      .select()
+      .from(urls)
+      .where(eq(urls.short, shortCode))
+      .limit(1);
+
+    if (url && url.status !== -1 && url.isLimit !== 1) {
+      try {
+        await redisClient.set(`url:${shortCode}`, JSON.stringify(url), {
+          EX: CACHE_TTL_SECONDS,
+        });
+      } catch (cacheErr) {
+        console.error("Failed to populate cache:", cacheErr);
+      }
+    }
+  }
+
+  return url;
+}
+
 export const short = asyncHandler(async (req: Request, res: Response) => {
   const { url, customAlias, expiresAt, password, clickLimit } = req.body;
   const normalizedUrl = normalizeURL(url);
@@ -67,7 +126,34 @@ export const short = asyncHandler(async (req: Request, res: Response) => {
       .limit(1);
 
     if (exist) {
-      throw new AppError("Already exists!", 409);
+      if (exist.status !== -1) {
+        throw new AppError("Already exists!", 409);
+      }
+
+      await db.delete(analytics).where(eq(analytics.urlId, exist.id));
+      await db
+        .update(urls)
+        .set({
+          userId,
+          url: normalizedUrl,
+          customAlias: 1,
+          age,
+          status: 1,
+          password: hashPass,
+          isPass,
+          clickLimit: parseLimit,
+          isLimit,
+          clickCount: 0,
+        })
+        .where(eq(urls.id, exist.id));
+
+      try {
+        await redisClient.del(`url:${customAlias}`);
+      } catch (cacheErr) {
+        console.error("Failed to invalidate cache:", cacheErr);
+      }
+
+      return res.status(201).json({ shortCode: customAlias });
     }
 
     await db.insert(urls).values({
@@ -134,32 +220,7 @@ export const redirect = asyncHandler(
       throw new AppError("Bad Request", 400);
     }
 
-    let url: typeof urls.$inferSelect | undefined;
-
-    try {
-      const cached = await redisClient.get(`url:${shortCode}`);
-      if (cached) url = JSON.parse(cached);
-    } catch (error) {
-      console.error("Redis unavailable, falling back to DB:", error);
-    }
-
-    if (!url) {
-      [url] = await db
-        .select()
-        .from(urls)
-        .where(eq(urls.short, shortCode))
-        .limit(1);
-
-      if (url && url.status !== -1 && url.isLimit !== 1) {
-        try {
-          await redisClient.set(`url:${shortCode}`, JSON.stringify(url), {
-            EX: CACHE_TTL_SECONDS,
-          });
-        } catch (cacheErr) {
-          console.error("Failed to populate cache:", cacheErr);
-        }
-      }
-    }
+    const url = await getRedirectUrl(shortCode);
 
     if (!url || url.status === -1) {
       throw new AppError("Not found!", 404);
@@ -197,27 +258,7 @@ export const redirect = asyncHandler(
       }
     }
 
-    await db
-      .update(urls)
-      .set({ clickCount: sql`${urls.clickCount} + 1` })
-      .where(eq(urls.id, url.id));
-
-    res.redirect(302, url.url);
-
-    const metaData = analyticsHelper(req);
-
-    analyticsQueue
-      .add("log-click", {
-        urlId: url.id,
-        ipAddress: metaData.ipAddress,
-        country: metaData.country,
-        browser: metaData.browser,
-        device: metaData.device,
-        referrer: metaData.referrer,
-      })
-      .catch((err) => {
-        console.error("Failed to enqueue analytics job:", err);
-      });
+    return logClickAndRedirect(req, res, url);
   },
 );
 
@@ -320,8 +361,7 @@ export const getPublicStats = asyncHandler(
         totalLinks: sql<number>`count(*)`,
         totalClicks: sql<number>`coalesce(sum(${urls.clickCount}), 0)`,
       })
-      .from(urls)
-      .where(ne(urls.status, -1));
+      .from(urls);
 
     return res.status(200).json({
       totalLinks: Number(stats?.totalLinks ?? 0),
@@ -479,7 +519,7 @@ export const getLinkDetails = asyncHandler(
           .from(analytics)
           .where(eq(analytics.urlId, link.id))
           .orderBy(desc(analytics.times))
-          .limit(12),
+          .limit(100),
       ]);
 
     return res.status(200).json({
